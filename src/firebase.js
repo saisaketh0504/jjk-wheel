@@ -5,7 +5,7 @@ import { getDatabase, ref, set, onValue, remove, get } from 'firebase/database'
 const firebaseConfig = {
   apiKey: "AIzaSyBlxbKdYDl47G1heeJ2jy9kZB-CLS2dQC0",
   authDomain: "realtime-database-2a3e8.firebaseapp.com",
-  databaseURL: "https://realtime-database-2a3e8.firebaseio.com",
+  databaseURL: "https://realtime-database-2a3e8-default-rtdb.asia-southeast1.firebasedatabase.app",
   projectId: "realtime-database-2a3e8",
   storageBucket: "realtime-database-2a3e8.firebasestorage.app",
   messagingSenderId: "199047295044",
@@ -34,10 +34,9 @@ export function listenToSessionState(sessionId, onStateChange) {
   
   const unsubscribe = onValue(sessionRef, (snapshot) => {
     const data = snapshot.val()
-    if (data) {
-      console.log('Firebase listener received:', data)
-      onStateChange(data)
-    }
+    console.log('Firebase listener received:', data)
+    // Always call the callback, even if data is null, so loading state can be updated
+    onStateChange(data)
   }, (error) => {
     console.error('Firebase listener error:', error)
   })

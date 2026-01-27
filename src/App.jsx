@@ -57,6 +57,8 @@ export default function App() {
   const [eliminated, setEliminated] = useState([])
   // lastAction is LOCAL-only for undo functionality (not synced across devices)
   const [lastAction, setLastAction] = useState(null)
+  // Loading state to prevent showing "All Done" before Firebase loads
+  const [isLoading, setIsLoading] = useState(true)
 
   const [mustStartSpinning, setMustStartSpinning] = useState(false)
   const [prizeNumber, setPrizeNumber] = useState(0)
@@ -84,75 +86,106 @@ export default function App() {
   const sessionInitialized = useRef(false)
 
   // ============================================================================
-  // FIREBASE INITIALIZATION: Check if session exists, create if not
-  // This runs once on mount to ensure session data exists in Firebase
+  // FIREBASE INITIALIZATION + LISTENER: Combined to prevent race conditions
+  // 1. First check if session needs initialization
+  // 2. Initialize if needed
+  // 3. THEN start listening for real-time updates
   // ============================================================================
   useEffect(() => {
-    async function initializeSession() {
-      if (sessionInitialized.current) return
-      sessionInitialized.current = true
-      
+    let unsubscribe = null
+    let timeoutId = null
+    
+    async function initAndListen() {
       console.log('🚀 Initializing session:', sessionId)
-      try {
-        const existingState = await getSessionState(sessionId)
-        
-        // If no session data exists in Firebase, initialize with default characters
-        if (!existingState || !existingState.remaining) {
-          console.log('📝 No existing session found, creating new session with initial characters')
-          await updateSessionState(sessionId, {
-            remaining: INITIAL_CHARACTERS,
-            eliminated: [],
-            selected: null
-          })
-        } else {
-          console.log('✅ Found existing session data:', existingState)
+      
+      // Timeout fallback - if Firebase doesn't respond in 5 seconds, stop loading
+      timeoutId = setTimeout(() => {
+        console.warn('⏰ Firebase timeout - initializing with default characters')
+        setIsLoading(false)
+        if (remaining.length === 0 && eliminated.length === 0) {
+          setRemaining([...INITIAL_CHARACTERS])
         }
+      }, 5000)
+      
+      try {
+        // Step 1: Check if session needs initialization (only once)
+        if (!sessionInitialized.current) {
+          sessionInitialized.current = true
+          
+          const existingState = await getSessionState(sessionId)
+          
+          // Determine if we need to initialize the session:
+          // 1. No data exists at all
+          // 2. remaining is undefined/null
+          // 3. Session is empty (both remaining AND eliminated are empty - corrupted/new session)
+          const needsInitialization = !existingState || existingState.initialized !== true
+
+          
+          if (needsInitialization) {
+            console.log('📝 No valid session found, creating new session with initial characters')
+            await updateSessionState(sessionId, {
+  initialized: true,
+  remaining: INITIAL_CHARACTERS,
+  eliminated: [],
+  selected: null
+})
+
+          } else {
+            console.log('✅ Found existing session data:', existingState)
+          }
+        }
+        
+        // Step 2: NOW start listening for real-time updates (after initialization is complete)
+        console.log('🔄 Setting up Firebase listener for session:', sessionId)
+        unsubscribe = listenToSessionState(sessionId, (remoteState) => {
+  console.log('📡 Received update from Firebase:', remoteState)
+
+  // Clear timeout since Firebase responded
+  if (timeoutId) {
+    clearTimeout(timeoutId)
+    timeoutId = null
+  }
+
+  // ✅ Firebase responded → stop loading NO MATTER WHAT
+  setIsLoading(false)
+
+  // If session doesn't exist yet, wait for initialization write
+  if (!remoteState) return
+
+  setRemaining(remoteState.remaining ?? [])
+  setEliminated(remoteState.eliminated ?? [])
+  setSelected(remoteState.selected ?? null)
+
+  if (remoteState.selected) {
+    setShowModal(true)
+    setCelebrate(true)
+  }
+
+  // Prevent undo conflicts from other devices
+  setLastAction(null)
+})
+
+
       } catch (e) {
-        console.error('Failed to initialize session:', e)
+        console.error('Firebase initialization/listener error:', e)
+        // On error, stop loading and use defaults
+        setIsLoading(false)
+        if (remaining.length === 0) {
+          setRemaining([...INITIAL_CHARACTERS])
+        }
       }
     }
     
-    initializeSession()
-  }, [sessionId])
-
-  // ============================================================================
-  // FIREBASE LISTENER: Real-time sync from Firebase to local state
-  // Firebase is the source of truth - all remote updates override local state
-  // ============================================================================
-  useEffect(() => {
-    console.log('🔄 Setting up Firebase listener for session:', sessionId)
-    try {
-      const unsubscribe = listenToSessionState(sessionId, (remoteState) => {
-        console.log('📡 Received update from Firebase:', remoteState)
-        if (remoteState) {
-          // Update remaining (default to empty array if not present)
-          if (remoteState.remaining !== undefined) {
-            setRemaining(remoteState.remaining || [])
-          }
-          
-          // Update eliminated (default to empty array if not present)
-          if (remoteState.eliminated !== undefined) {
-            setEliminated(remoteState.eliminated || [])
-          }
-          
-          // Update selected and show modal for new selections
-          if (remoteState.selected !== undefined) {
-            setSelected(remoteState.selected)
-            // Show celebration modal when a character is selected
-            if (remoteState.selected) {
-              setShowModal(true)
-              setCelebrate(true)
-            }
-          }
-          
-          // Clear local undo history when receiving remote updates
-          // This prevents undo conflicts across devices
-          setLastAction(null)
-        }
-      })
-      return unsubscribe
-    } catch (e) {
-      console.error('Firebase listener error:', e)
+    initAndListen()
+    
+    // Cleanup listener and timeout on unmount
+    return () => {
+      if (unsubscribe) {
+        unsubscribe()
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
     }
   }, [sessionId])
 
@@ -182,7 +215,7 @@ export default function App() {
     setCelebrate(true)
 
     try {
-      updateSessionState(sessionId, { remaining: newRemaining, eliminated: newEliminated, selected: { name: lastChar, image: characterImages[lastChar] || '/images/placeholder.svg' } })
+      updateSessionState(sessionId, { initialized: true, remaining: newRemaining, eliminated: newEliminated, selected: { name: lastChar, image: characterImages[lastChar] || '/images/placeholder.svg' } })
     } catch (e) {}
   }
 
@@ -218,7 +251,7 @@ export default function App() {
 
     // Sync to Firebase for other group members
     try {
-      updateSessionState(sessionId, { remaining: newRemaining, eliminated: newEliminated, selected: { name: chosen, image: characterImages[chosen] || '/images/placeholder.svg' } })
+      updateSessionState(sessionId, { initialized: true, remaining: newRemaining, eliminated: newEliminated, selected: { name: chosen, image: characterImages[chosen] || '/images/placeholder.svg' } })
     } catch (e) {
       // Firebase not configured or offline - continue with local state
     }
@@ -243,6 +276,7 @@ export default function App() {
       // Sync undo result to Firebase so all devices see the restored state
       try {
         updateSessionState(sessionId, {
+          initialized: true,
           remaining: prevRemaining,
           eliminated: prevEliminated,
           selected: null
@@ -269,6 +303,7 @@ export default function App() {
     // Sync reset to Firebase so all devices see the fresh state
     try {
       updateSessionState(sessionId, {
+        initialized: true,
         remaining: freshRemaining,
         eliminated: freshEliminated,
         selected: null
@@ -295,19 +330,33 @@ export default function App() {
 
       <main className="main">
         <section className="wheel-section">
-          {remaining.length === 1 ? (
+          {isLoading ? (
+            <div className="last-character-display">
+              <div className="last-character-circle">
+                <span className="last-character-name">Loading...</span>
+              </div>
+              <p className="last-character-hint">Connecting to session...</p>
+            </div>
+          ) : remaining.length === 1 ? (
             <div className="last-character-display">
               <div className="last-character-circle">
                 <span className="last-character-name">{remaining[0]}</span>
               </div>
               <p className="last-character-hint">Last one! Hit SPIN to draw them.</p>
             </div>
-          ) : remaining.length === 0 ? (
+          ) : remaining.length === 0 && eliminated.length > 0 ? (
             <div className="last-character-display">
               <div className="last-character-circle empty-wheel">
                 <span className="last-character-name">All Done!</span>
               </div>
               <p className="last-character-hint">Reset the wheel to start again.</p>
+            </div>
+          ) : remaining.length === 0 && eliminated.length === 0 ? (
+            <div className="last-character-display">
+              <div className="last-character-circle">
+                <span className="last-character-name">Preparing…</span>
+              </div>
+              <p className="last-character-hint">Syncing session data</p>
             </div>
           ) : (
           <div className="wheel-wrap">
