@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app'
-import { getDatabase, ref, set, onValue, remove } from 'firebase/database'
+import { getDatabase, ref, set, onValue, remove, get } from 'firebase/database'
 
 // Firebase configuration
 const firebaseConfig = {
@@ -20,6 +20,13 @@ export const db = getDatabase(app)
 export function updateSessionState(sessionId, state) {
   const sessionRef = ref(db, `sessions/${sessionId}`)
   set(sessionRef, state).catch((e) => console.error('Firebase write error:', e))
+}
+
+// Get current session state (one-time read)
+export async function getSessionState(sessionId) {
+  const sessionRef = ref(db, `sessions/${sessionId}`)
+  const snapshot = await get(sessionRef)
+  return snapshot.val()
 }
 
 export function listenToSessionState(sessionId, onStateChange) {

@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Wheel } from 'react-custom-roulette'
 import Confetti from 'react-confetti'
 import './App.css'
-import { updateSessionState, listenToSessionState } from './firebase'
+import { updateSessionState, listenToSessionState, getSessionState } from './firebase'
 
-const STORAGE_KEY = 'jjk-wheel-state-v1'
-
+// Initial characters used when creating a new session
 const INITIAL_CHARACTERS = [
   'Gojo Satoru',
   'Ryomen Sukuna',
@@ -45,34 +44,23 @@ const characterImages = {
   'Hakari': '/images/hakari.jpeg',
 }
 
-function saveToStorage(state) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  } catch (e) {
-    // ignore
-  }
-}
-
-function loadFromStorage() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    return JSON.parse(raw)
-  } catch (e) {
-    return null
-  }
-}
+// ============================================================================
+// STATE MANAGEMENT: Firebase is the SINGLE source of truth
+// - All state is synced from Firebase in real-time
+// - No localStorage usage - all devices see the same state
+// - Local state is only used for UI rendering, Firebase data always wins
+// ============================================================================
 
 export default function App() {
-  const stored = useMemo(() => loadFromStorage(), [])
-
-  const [remaining, setRemaining] = useState(stored?.remaining ?? INITIAL_CHARACTERS)
-  const [eliminated, setEliminated] = useState(stored?.eliminated ?? [])
-  const [lastAction, setLastAction] = useState(stored?.lastAction ?? null)
+  // Initialize all state as empty - Firebase will populate on mount
+  const [remaining, setRemaining] = useState([])
+  const [eliminated, setEliminated] = useState([])
+  // lastAction is LOCAL-only for undo functionality (not synced across devices)
+  const [lastAction, setLastAction] = useState(null)
 
   const [mustStartSpinning, setMustStartSpinning] = useState(false)
   const [prizeNumber, setPrizeNumber] = useState(0)
-  const [selected, setSelected] = useState(stored?.lastSelected ?? null)
+  const [selected, setSelected] = useState(null)
   const [showModal, setShowModal] = useState(false)
   const [celebrate, setCelebrate] = useState(false)
   const [showPanel, setShowPanel] = useState(false)
@@ -91,25 +79,75 @@ export default function App() {
     return 'jjk-default-group'
   })
   const wheelRef = useRef(null)
+  
+  // Track if we've initialized the session to prevent duplicate writes
+  const sessionInitialized = useRef(false)
 
+  // ============================================================================
+  // FIREBASE INITIALIZATION: Check if session exists, create if not
+  // This runs once on mount to ensure session data exists in Firebase
+  // ============================================================================
   useEffect(() => {
-    saveToStorage({ remaining, eliminated, lastAction, lastSelected: selected })
-  }, [remaining, eliminated, lastAction, selected])
+    async function initializeSession() {
+      if (sessionInitialized.current) return
+      sessionInitialized.current = true
+      
+      console.log('🚀 Initializing session:', sessionId)
+      try {
+        const existingState = await getSessionState(sessionId)
+        
+        // If no session data exists in Firebase, initialize with default characters
+        if (!existingState || !existingState.remaining) {
+          console.log('📝 No existing session found, creating new session with initial characters')
+          await updateSessionState(sessionId, {
+            remaining: INITIAL_CHARACTERS,
+            eliminated: [],
+            selected: null
+          })
+        } else {
+          console.log('✅ Found existing session data:', existingState)
+        }
+      } catch (e) {
+        console.error('Failed to initialize session:', e)
+      }
+    }
+    
+    initializeSession()
+  }, [sessionId])
 
-  // Listen to Firebase for real-time sync from other devices
+  // ============================================================================
+  // FIREBASE LISTENER: Real-time sync from Firebase to local state
+  // Firebase is the source of truth - all remote updates override local state
+  // ============================================================================
   useEffect(() => {
     console.log('🔄 Setting up Firebase listener for session:', sessionId)
     try {
       const unsubscribe = listenToSessionState(sessionId, (remoteState) => {
         console.log('📡 Received update from Firebase:', remoteState)
-        if (remoteState && remoteState.remaining && remoteState.eliminated) {
-          setRemaining(remoteState.remaining)
-          setEliminated(remoteState.eliminated)
-          if (remoteState.selected) {
-            setSelected(remoteState.selected)
-            setShowModal(true)
-            setCelebrate(true)
+        if (remoteState) {
+          // Update remaining (default to empty array if not present)
+          if (remoteState.remaining !== undefined) {
+            setRemaining(remoteState.remaining || [])
           }
+          
+          // Update eliminated (default to empty array if not present)
+          if (remoteState.eliminated !== undefined) {
+            setEliminated(remoteState.eliminated || [])
+          }
+          
+          // Update selected and show modal for new selections
+          if (remoteState.selected !== undefined) {
+            setSelected(remoteState.selected)
+            // Show celebration modal when a character is selected
+            if (remoteState.selected) {
+              setShowModal(true)
+              setCelebrate(true)
+            }
+          }
+          
+          // Clear local undo history when receiving remote updates
+          // This prevents undo conflicts across devices
+          setLastAction(null)
         }
       })
       return unsubscribe
@@ -186,24 +224,58 @@ export default function App() {
     }
   }
 
+  // ============================================================================
+  // UNDO: Local-only history, but syncs result to Firebase
+  // Undo restores previous state locally, then pushes to Firebase
+  // ============================================================================
   function handleUndo() {
     if (!lastAction) return
     if (lastAction.type === 'eliminate' && lastAction.prevState) {
-      setRemaining(lastAction.prevState.remaining)
-      setEliminated(lastAction.prevState.eliminated)
+      const prevRemaining = lastAction.prevState.remaining
+      const prevEliminated = lastAction.prevState.eliminated
+      
+      // Update local state
+      setRemaining(prevRemaining)
+      setEliminated(prevEliminated)
       setLastAction(null)
       setSelected(null)
+      
+      // Sync undo result to Firebase so all devices see the restored state
+      try {
+        updateSessionState(sessionId, {
+          remaining: prevRemaining,
+          eliminated: prevEliminated,
+          selected: null
+        })
+      } catch (e) {
+        console.error('Failed to sync undo to Firebase:', e)
+      }
     }
   }
 
+  // ============================================================================
+  // RESET: Restore all characters and sync to Firebase
+  // ============================================================================
   function handleReset() {
-    setRemaining([...INITIAL_CHARACTERS])
-    setEliminated([])
+    const freshRemaining = [...INITIAL_CHARACTERS]
+    const freshEliminated = []
+    
+    // Update local state
+    setRemaining(freshRemaining)
+    setEliminated(freshEliminated)
     setLastAction(null)
     setSelected(null)
+    
+    // Sync reset to Firebase so all devices see the fresh state
     try {
-      localStorage.removeItem(STORAGE_KEY)
-    } catch (e) {}
+      updateSessionState(sessionId, {
+        remaining: freshRemaining,
+        eliminated: freshEliminated,
+        selected: null
+      })
+    } catch (e) {
+      console.error('Failed to sync reset to Firebase:', e)
+    }
   }
 
   function copySessionLink() {
