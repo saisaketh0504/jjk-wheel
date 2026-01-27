@@ -87,13 +87,8 @@ export default function App() {
       return urlSession
     }
     
-    // Fall back to localStorage
-    let id = localStorage.getItem('jjk-session-id')
-    if (!id) {
-      id = 'session-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9)
-      localStorage.setItem('jjk-session-id', id)
-    }
-    return id
+    // Default session - everyone joins this automatically
+    return 'jjk-default-group'
   })
   const wheelRef = useRef(null)
 
