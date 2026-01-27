@@ -38,7 +38,7 @@ const characterImages = {
   'Yuji Itadori': '/images/yuji.jpeg',
   'Nanami Kento': '/images/nanami.jpeg',
   'Choso': '/images/choso.jpeg',
-  'Nobara Kugisaki': '/images/nobara.jpg',
+  'Nobara Kugisaki': '/images/nobara.jpeg',
   'Mahito': '/images/mahito.jpeg',
   'Jogo': '/images/jogo.jpg',
   'Yuki Tsukumo': '/images/yuki.jpeg',
