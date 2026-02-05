@@ -24,6 +24,26 @@ const INITIAL_CHARACTERS = [
   'Hakari',
 ]
 
+// Predetermined order for selection (appears random but follows this sequence)
+const PREDETERMINED_ORDER = [
+  'Yuta Okkotsu',
+  'Choso',
+  'Megumi Fushiguro',
+  'Nobara Kugisaki',
+  'Toji Fushiguro',
+  'Yuki Tsukumo',
+  'Yuji Itadori',
+  'Mahito',
+  'Jogo',
+  'Gojo Satoru',
+  'Hakari',
+  'Maki Zenin',
+  'Suguru Geto',
+  'Nanami Kento',
+  'Ryomen Sukuna',
+  'Mahoraga',
+]
+
 // Map character names to images placed under public/images
 const characterImages = {
   'Gojo Satoru': '/images/gojo.jpeg',
@@ -53,8 +73,8 @@ const characterImages = {
 
 export default function App() {
   // Initialize all state as empty - Firebase will populate on mount
-  const [remaining, setRemaining] = useState([])
-  const [eliminated, setEliminated] = useState([])
+  const [characters, setCharacters] = useState([]) // All characters always stay on wheel
+  const [selectedCharacters, setSelectedCharacters] = useState([]) // Characters that have been picked (shown as white)
   // lastAction is LOCAL-only for undo functionality (not synced across devices)
   const [lastAction, setLastAction] = useState(null)
   // Loading state to prevent showing "All Done" before Firebase loads
@@ -102,8 +122,8 @@ export default function App() {
       timeoutId = setTimeout(() => {
         console.warn('⏰ Firebase timeout - initializing with default characters')
         setIsLoading(false)
-        if (remaining.length === 0 && eliminated.length === 0) {
-          setRemaining([...INITIAL_CHARACTERS])
+        if (characters.length === 0) {
+          setCharacters([...INITIAL_CHARACTERS])
         }
       }, 5000)
       
@@ -116,8 +136,8 @@ export default function App() {
           
           // Determine if we need to initialize the session:
           // 1. No data exists at all
-          // 2. remaining is undefined/null
-          // 3. Session is empty (both remaining AND eliminated are empty - corrupted/new session)
+          // 2. characters is undefined/null
+          // 3. Session is empty (corrupted/new session)
           const needsInitialization = !existingState || existingState.initialized !== true
 
           
@@ -125,8 +145,8 @@ export default function App() {
             console.log('📝 No valid session found, creating new session with initial characters')
             await updateSessionState(sessionId, {
   initialized: true,
-  remaining: INITIAL_CHARACTERS,
-  eliminated: [],
+  characters: INITIAL_CHARACTERS,
+  selectedCharacters: [],
   selected: null
 })
 
@@ -152,8 +172,8 @@ export default function App() {
   // If session doesn't exist yet, wait for initialization write
   if (!remoteState) return
 
-  setRemaining(remoteState.remaining ?? [])
-  setEliminated(remoteState.eliminated ?? [])
+  setCharacters(remoteState.characters ?? remoteState.remaining ?? [])
+  setSelectedCharacters(remoteState.selectedCharacters ?? remoteState.eliminated ?? [])
   setSelected(remoteState.selected ?? null)
 
   if (remoteState.selected) {
@@ -170,8 +190,8 @@ export default function App() {
         console.error('Firebase initialization/listener error:', e)
         // On error, stop loading and use defaults
         setIsLoading(false)
-        if (remaining.length === 0) {
-          setRemaining([...INITIAL_CHARACTERS])
+        if (characters.length === 0) {
+          setCharacters([...INITIAL_CHARACTERS])
         }
       }
     }
@@ -197,37 +217,33 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [showModal])
 
-  const data = remaining.map((name) => ({ option: name }))
+  // Create wheel data with colors based on whether character was selected
+  const data = characters.map((name, index) => {
+    const isSelected = selectedCharacters.includes(name)
+    return { 
+      option: name,
+      style: {
+        backgroundColor: isSelected ? '#ffffff' : (index % 2 === 0 ? '#000000' : '#1a1a1a'),
+        textColor: isSelected ? '#000000' : '#ffffff'
+      }
+    }
+  })
 
-  // Handle the last character - auto-select without spinning
-  function handleLastCharacter() {
-    const lastChar = remaining[0]
-    const prevState = { remaining: [...remaining], eliminated: [...eliminated] }
-    
-    const newRemaining = []
-    const newEliminated = [lastChar, ...eliminated]
-
-    setRemaining(newRemaining)
-    setEliminated(newEliminated)
-    setLastAction({ type: 'eliminate', prevState })
-    setSelected({ name: lastChar, image: characterImages[lastChar] || '/images/placeholder.svg' })
-    setShowModal(true)
-    setCelebrate(true)
-
-    try {
-      updateSessionState(sessionId, { initialized: true, remaining: newRemaining, eliminated: newEliminated, selected: { name: lastChar, image: characterImages[lastChar] || '/images/placeholder.svg' } })
-    } catch (e) {}
-  }
+  // Check if all characters have been selected
+  const allSelected = characters.length > 0 && selectedCharacters.length === characters.length
+  // Get remaining (unselected) characters for spin logic
+  const remainingCharacters = characters.filter(c => !selectedCharacters.includes(c))
 
   function handleSpin() {
-    // If only one character left, select them directly
-    if (data.length === 1) {
-      handleLastCharacter()
-      return
-    }
-    if (data.length < 1) return
-    const newPrize = Math.floor(Math.random() * data.length)
-    setPrizeNumber(newPrize)
+    if (remainingCharacters.length < 1 || data.length < 1) return
+    
+    // Pick the next character from the predetermined order
+    const nextChar = PREDETERMINED_ORDER.find(name => !selectedCharacters.includes(name))
+    const chosenName = nextChar || remainingCharacters[0]
+    // Find the index of this character in the full wheel data
+    const prizeIdx = characters.indexOf(chosenName)
+    
+    setPrizeNumber(prizeIdx)
     setMustStartSpinning(true)
   }
 
@@ -237,21 +253,19 @@ export default function App() {
     if (!chosen) return
 
     // store previous state for undo
-    const prevState = { remaining: [...remaining], eliminated: [...eliminated] }
+    const prevState = { characters: [...characters], selectedCharacters: [...selectedCharacters] }
 
-    const newRemaining = remaining.filter((n) => n !== chosen)
-    const newEliminated = [chosen, ...eliminated]
+    const newSelectedCharacters = [chosen, ...selectedCharacters]
 
-    setRemaining(newRemaining)
-    setEliminated(newEliminated)
-    setLastAction({ type: 'eliminate', prevState })
+    setSelectedCharacters(newSelectedCharacters)
+    setLastAction({ type: 'select', prevState })
     setSelected({ name: chosen, image: characterImages[chosen] || '/images/placeholder.svg' })
     setShowModal(true)
     setCelebrate(true)
 
     // Sync to Firebase for other group members
     try {
-      updateSessionState(sessionId, { initialized: true, remaining: newRemaining, eliminated: newEliminated, selected: { name: chosen, image: characterImages[chosen] || '/images/placeholder.svg' } })
+      updateSessionState(sessionId, { initialized: true, characters: characters, selectedCharacters: newSelectedCharacters, selected: { name: chosen, image: characterImages[chosen] || '/images/placeholder.svg' } })
     } catch (e) {
       // Firebase not configured or offline - continue with local state
     }
@@ -263,13 +277,13 @@ export default function App() {
   // ============================================================================
   function handleUndo() {
     if (!lastAction) return
-    if (lastAction.type === 'eliminate' && lastAction.prevState) {
-      const prevRemaining = lastAction.prevState.remaining
-      const prevEliminated = lastAction.prevState.eliminated
+    if (lastAction.type === 'select' && lastAction.prevState) {
+      const prevCharacters = lastAction.prevState.characters
+      const prevSelectedCharacters = lastAction.prevState.selectedCharacters
       
       // Update local state
-      setRemaining(prevRemaining)
-      setEliminated(prevEliminated)
+      setCharacters(prevCharacters)
+      setSelectedCharacters(prevSelectedCharacters)
       setLastAction(null)
       setSelected(null)
       
@@ -277,8 +291,8 @@ export default function App() {
       try {
         updateSessionState(sessionId, {
           initialized: true,
-          remaining: prevRemaining,
-          eliminated: prevEliminated,
+          characters: prevCharacters,
+          selectedCharacters: prevSelectedCharacters,
           selected: null
         })
       } catch (e) {
@@ -291,12 +305,12 @@ export default function App() {
   // RESET: Restore all characters and sync to Firebase
   // ============================================================================
   function handleReset() {
-    const freshRemaining = [...INITIAL_CHARACTERS]
-    const freshEliminated = []
+    const freshCharacters = [...INITIAL_CHARACTERS]
+    const freshSelectedCharacters = []
     
     // Update local state
-    setRemaining(freshRemaining)
-    setEliminated(freshEliminated)
+    setCharacters(freshCharacters)
+    setSelectedCharacters(freshSelectedCharacters)
     setLastAction(null)
     setSelected(null)
     
@@ -304,8 +318,8 @@ export default function App() {
     try {
       updateSessionState(sessionId, {
         initialized: true,
-        remaining: freshRemaining,
-        eliminated: freshEliminated,
+        characters: freshCharacters,
+        selectedCharacters: freshSelectedCharacters,
         selected: null
       })
     } catch (e) {
@@ -337,21 +351,14 @@ export default function App() {
               </div>
               <p className="last-character-hint">Connecting to session...</p>
             </div>
-          ) : remaining.length === 1 ? (
-            <div className="last-character-display">
-              <div className="last-character-circle">
-                <span className="last-character-name">{remaining[0]}</span>
-              </div>
-              <p className="last-character-hint">Last one! Hit SPIN to draw them.</p>
-            </div>
-          ) : remaining.length === 0 && eliminated.length > 0 ? (
+          ) : allSelected && characters.length > 0 ? (
             <div className="last-character-display">
               <div className="last-character-circle empty-wheel">
                 <span className="last-character-name">All Done!</span>
               </div>
               <p className="last-character-hint">Reset the wheel to start again.</p>
             </div>
-          ) : remaining.length === 0 && eliminated.length === 0 ? (
+          ) : characters.length === 0 ? (
             <div className="last-character-display">
               <div className="last-character-circle">
                 <span className="last-character-name">Preparing…</span>
@@ -365,8 +372,6 @@ export default function App() {
               prizeNumber={prizeNumber}
               data={data}
               onStopSpinning={onStopSpinning}
-              backgroundColors={["#000000", "#1a1a1a"]}
-              textColors={["#ffffff"]}
               outerBorderColor={"#fff"}
               innerBorderColor={"#fff"}
               radiusLineColor={"#fff"}
@@ -379,7 +384,7 @@ export default function App() {
           )}
 
           <div className="controls">
-            <button className="btn primary" onClick={handleSpin} disabled={mustStartSpinning || remaining.length < 1}>
+            <button className="btn primary" onClick={handleSpin} disabled={mustStartSpinning || remainingCharacters.length < 1}>
               SPIN
             </button>
             <button className="btn secondary" onClick={handleUndo} disabled={!lastAction}>
@@ -410,11 +415,11 @@ export default function App() {
 
           <div className="eliminated">
             <h3>Drawing History</h3>
-            {eliminated.length === 0 ? (
+            {selectedCharacters.length === 0 ? (
               <div className="empty">No characters drawn yet</div>
             ) : (
               <ul>
-                {eliminated.map((c) => (
+                {selectedCharacters.map((c) => (
                   <li key={c}>{c}</li>
                 ))}
               </ul>
